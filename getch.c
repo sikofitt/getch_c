@@ -1,3 +1,9 @@
+/***********************************************************************
+ * This Source Code Form is subject to the terms of the Mozilla Public *
+ * License, v. 2.0. If a copy of the MPL was not distributed with this *
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/.            *
+ ***********************************************************************/
+
 #include <stdio.h>
 #include <termios.h>
 #include <unistd.h>
@@ -8,7 +14,7 @@
 #include <glob.h>
 #include "getch.h"
 
-// #define FKEY(k) ((k) >= KEY_F1 && (k) <= KEY_F10) || (k) == KEY_F12 || (k) == KEY_F11
+#define FKEY(k) ((k) >= KEY_F1 && (k) <= KEY_F10) || (k) == KEY_F12 || (k) == KEY_F11
 #define NOTNUMPAD(k) ((k) >= KEY_HOME && (k) <= KEY_DELETE)
 
 #define EVENT_DEVICE_GLOB "/dev/input/by-path/*-event-kbd"
