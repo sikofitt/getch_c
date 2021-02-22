@@ -12,8 +12,5 @@ int main() {
         printf("Special Key : %d\n", key);
     }
 
-    key = _getch();
-    printf("Anything left? : %d\n", key);
-
     return 0;
 }

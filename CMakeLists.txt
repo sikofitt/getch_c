@@ -4,6 +4,6 @@ project(getch C)
 set(CMAKE_C_STANDARD 11)
 
 add_library(getch SHARED getch.c getch.h)
-add_executable(test test.c )
+add_executable(example example.c )
 
-target_link_libraries(test -L./build getch)
+target_link_libraries(example -L./build getch)
