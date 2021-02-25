@@ -21,27 +21,24 @@
 
 static struct termios oldTermAttributes;
 
-static void setRawMode(void);
-static void setNormalMode(void);
-
-inline static int discardRead(unsigned int length)
+static int discardRead(unsigned int length)
 {
     char buffer[length];
-    ssize_t bytes_read;
+    ssize_t bytesRead;
 
     int flags = fcntl(STDIN_FILENO, F_GETFL);
     fcntl(STDIN_FILENO, F_SETFL, flags|O_NONBLOCK);
 
-    if( (bytes_read = fread(buffer, sizeof(char), length, stdin)) == -1) {
+    if( (bytesRead = fread(buffer, sizeof(char), length, stdin)) == -1) {
         perror("discardRead");
     }
 
     fcntl(STDIN_FILENO, F_SETFL, flags);
 
-    return (int)bytes_read;
+    return (int)bytesRead;
 }
 
-int getEventDevice(const char * device)
+static int getEventDevice(const char * device)
 {
     glob_t search;
 
@@ -77,28 +74,33 @@ int getEventDevice(const char * device)
     return -1;
 }
 
-unsigned short getScanCode()
+static unsigned short getScanCode()
 {
-    struct input_event inputEvent[5];
-    int fd;
+    struct input_event inputEvent[3];
+    int eventDevice;
 
     const char device[FILENAME_MAX];
-    if(-1 == getEventDevice(device)) {
+    if(getEventDevice(device) == -1) {
+         perror("getEventDevice");
         return KEY_RESERVED;
     }
 
-    if( (fd = open(device, O_RDONLY)) == -1 ) {
+    if( ( eventDevice = open(device, O_RDONLY)) == -1 ) {
+        perror("open");
         return KEY_RESERVED;
     };
 
-    if( read(fd, &inputEvent, sizeof (inputEvent)) == -1 ) {
+
+
+    if( read(eventDevice, &inputEvent, sizeof(inputEvent)) == -1) {
+        close(eventDevice);
         return KEY_RESERVED;
     }
 
-    close(fd);
+    close(eventDevice);
 
-    for(int i = 0; i<=5; i++) {
-        if(inputEvent[i].type == EV_KEY) {
+    for(int i = 0;i<3;i++) {
+        if(inputEvent[i].type == EV_KEY && inputEvent[i].code != KEY_ENTER) {
             return inputEvent[i].code;
         }
     }
@@ -106,37 +108,16 @@ unsigned short getScanCode()
     return KEY_RESERVED;
 }
 
-#pragma clang diagnostic push
-#pragma ide diagnostic ignored "cppcoreguidelines-narrowing-conversions"
-inline static char *reverseString(char *str)
-{
-      char *p1, *p2;
-
-      if (! str || ! *str)
-            return str;
-      for (p1 = str, p2 = str + strlen(str) - 1; p2 > p1; ++p1, --p2)
-      {
-            *p1 ^= *p2;
-            *p2 ^= *p1;
-            *p1 ^= *p2;
-      }
-      return str;
-}
-#pragma clang diagnostic pop
-
-#pragma clang diagnostic push
-#pragma ide diagnostic ignored "bugprone-reserved-identifier"
 inline static void pushStdin(int c) {
     ungetc(c, stdin);
 }
-#pragma clang diagnostic pop
 
-inline static void setNormalMode(void)
+static void setNormalMode(void)
 {
     tcsetattr(STDIN_FILENO, TCSANOW, &oldTermAttributes);
 }
 
-inline static void setRawMode(void)
+static void setRawMode(void)
 {
     tcgetattr(STDIN_FILENO, &oldTermAttributes);
 
@@ -147,7 +128,7 @@ inline static void setRawMode(void)
 
 }
 
-unsigned short resolveScanCode(unsigned short key)
+static unsigned short resolveScanCode(unsigned short key)
 {
     switch(key) {
         case KEY_DOWN: return KEY_KP2;
@@ -164,16 +145,15 @@ unsigned short resolveScanCode(unsigned short key)
     };
 }
 
-int readKey(void) {
+static int readKey(void) {
 
-    unsigned short scanCode;
     int key = getchar();
 
     if (key == 27) {
 
-        scanCode = getScanCode();
+        unsigned short scanCode = getScanCode();
 
-        if (scanCode == KEY_ESC) {
+        if (scanCode == KEY_ESC || scanCode == KEY_RESERVED) {
             return 27;
         }
 
@@ -226,6 +206,7 @@ int readKey(void) {
         }
 
         pushStdin(scanCode);
+
         return returnResult;
     }
 
