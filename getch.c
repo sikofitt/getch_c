@@ -14,12 +14,33 @@
 #include <glob.h>
 #include "getch.h"
 
-#define FKEY(k) ((k) >= KEY_F1 && (k) <= KEY_F10) || (k) == KEY_F12 || (k) == KEY_F11
-#define NOTNUMPAD(k) ((k) >= KEY_HOME && (k) <= KEY_DELETE)
-
 #define EVENT_DEVICE_GLOB "/dev/input/by-path/*-event-kbd"
 
+#define FKEY(k) ((k) >= KEY_F1 && (k) <= KEY_F10) || (k) == KEY_F12 || (k) == KEY_F11
+#define NOTNUMPAD(k) ((k) >= KEY_HOME && (k) <= KEY_DELETE)
+#define XOR_SWAP(a,b) do\
+    {\
+      (a) ^= (b);\
+      (b) ^= (a);\
+      (a) ^= (b);\
+    } while (0)
+
 static struct termios oldTermAttributes;
+
+inline static void reverseString(char * str)
+{
+    if (str)
+    {
+        char * end = str + strlen(str) - 1;
+
+        while (str < end)
+        {
+            XOR_SWAP(*str, *end);
+            str++;
+            end--;
+        }
+    }
+}
 
 static int discardRead(unsigned int length)
 {
@@ -38,7 +59,7 @@ static int discardRead(unsigned int length)
     return (int)bytesRead;
 }
 
-static int getEventDevice(const char * device)
+static int getEventDevice(char ** device)
 {
     glob_t search;
 
@@ -64,7 +85,8 @@ static int getEventDevice(const char * device)
     for(int i = 0; i<search.gl_pathc;i++) {
         if(access(search.gl_pathv[i], F_OK) == 0) {
             pathLength = strlen(search.gl_pathv[i]) + 1;
-            strncpy((char *)device, search.gl_pathv[i], pathLength);
+            *device = (char *)malloc(pathLength);
+            strcpy(*device, search.gl_pathv[i]);
             globfree(&search);
             return 1;
         }
@@ -76,30 +98,33 @@ static int getEventDevice(const char * device)
 
 static unsigned short getScanCode()
 {
-    struct input_event inputEvent[3];
+    struct input_event inputEvent[5];
     int eventDevice;
 
-    const char device[FILENAME_MAX];
-    if(getEventDevice(device) == -1) {
+    char *device;
+    if(getEventDevice(&device) == -1) {
          perror("getEventDevice");
+         free(device);
         return KEY_RESERVED;
     }
 
     if( ( eventDevice = open(device, O_RDONLY)) == -1 ) {
+        free(device);
         perror("open");
         return KEY_RESERVED;
     };
 
-
+    free(device);
 
     if( read(eventDevice, &inputEvent, sizeof(inputEvent)) == -1) {
         close(eventDevice);
+        perror("read");
         return KEY_RESERVED;
     }
 
     close(eventDevice);
 
-    for(int i = 0;i<3;i++) {
+    for(int i = 0;i<5;i++) {
         if(inputEvent[i].type == EV_KEY && inputEvent[i].code != KEY_ENTER) {
             return inputEvent[i].code;
         }
@@ -153,7 +178,7 @@ static int readKey(void) {
 
         unsigned short scanCode = getScanCode();
 
-        if (scanCode == KEY_ESC || scanCode == KEY_RESERVED) {
+        if (scanCode == KEY_ESC ) {
             return 27;
         }
 
@@ -171,7 +196,6 @@ static int readKey(void) {
             case KEY_F2:
             case KEY_F3:
             case KEY_F4:
-
             case KEY_KP1: // END
             case KEY_KP2: // DOWN
             case KEY_KP4: // LEFT
@@ -199,6 +223,7 @@ static int readKey(void) {
 
             default:
                 discardBytes = 0;
+                break;
         }
 
         if (discardBytes != 0) {
@@ -225,7 +250,55 @@ int _getch(void) {
     return key;
 }
 
+int getch(void)
+{
+    return _getch();
+}
+
 int _ungetch(int ch)
 {
     return ungetc(ch, stdin);
+}
+
+int ungetch(int ch)
+{
+    return _ungetch(ch);
+}
+
+int *cinPeekCount(ushort count)
+{
+    char buffer[count];
+
+    int flags = fcntl(STDIN_FILENO, F_GETFL);
+
+    fcntl(STDIN_FILENO, F_SETFL, flags|O_NONBLOCK);
+
+    size_t byteCount = fread(&buffer, sizeof(char), count, stdin);
+
+    fcntl(STDIN_FILENO, F_SETFL, flags);
+
+    int *res = (int*)malloc(byteCount);
+
+    for(int i=0;i<byteCount;i++)
+    {
+            res[i] = (int)buffer[i];
+    }
+
+    reverseString(buffer);
+
+    for(int i=0;i<byteCount;i++) {
+        pushStdin(buffer[i]);
+    }
+
+    return res;
+}
+
+int cinPeek()
+{
+    int flags = fcntl(STDIN_FILENO, F_GETFL);
+    fcntl(STDIN_FILENO, F_SETFL, flags|O_NONBLOCK);
+    int result = fgetc(stdin);
+    fcntl(STDIN_FILENO, F_SETFL, flags);
+    ungetc(result, stdin);
+    return result;
 }

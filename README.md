@@ -10,6 +10,8 @@ See https://docs.microsoft.com/en-us/cpp/c-runtime-library/reference/getch-getwc
 
 Difference is that _getch will read CTRL+C, or any control characters.
 
+There is also an extra function `int cinPeek()` that returns the next character in stdin without removing it.
+
 ### Note
 Make sure that the user calling the function is in the group "input"
 

@@ -11,4 +11,17 @@ int main() {
         key = _getch();
         printf("Special Key : %d\n", key);
     }
+
+   do {
+       key = _getch();
+       printf("Key : %d\n", key);
+   } while(key != 113);
+
+    _ungetch('A');
+
+    int res  = cinPeek();
+    int getch = _getch();
+
+    printf("%c : %c\n\r", res, getch);
+
 }

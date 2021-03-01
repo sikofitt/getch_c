@@ -5,15 +5,23 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <string.h>
+#include <libevdev-1.0/libevdev/libevdev.h>
 #include <glob.h>
 
 #include "../getch.h"
+#define XOR_SWAP(a,b) do\
+    {\
+      (a) ^= (b);\
+      (b) ^= (a);\
+      (a) ^= (b);\
+    } while (0)
 
 #define EV_PRESSED 1
 #define EV_RELEASED 0
 
 inline static void writeToEventDevice(__u16 code)
 {
+    struct libevdev *dev = NULL;
     glob_t globResult;
     glob("/dev/input/by-path/*-event-kbd", GLOB_NOSORT, NULL, &globResult);
 
@@ -23,34 +31,45 @@ inline static void writeToEventDevice(__u16 code)
         exit(EXIT_FAILURE);
     }
 
-    char device[strlen(globResult.gl_pathv[0])];
-    strncpy(device, globResult.gl_pathv[0], strlen(globResult.gl_pathv[0]) + 1);
+    char device[strlen(globResult.gl_pathv[0])+1];
+    strcpy(device, globResult.gl_pathv[0]);
     globfree(&globResult);
 
-    struct input_event inputEvent[2];
-    int eventDevice = open(device, O_WRONLY);
+    struct input_event inputEvent[3];
+    int eventDevice = open(device, O_WRONLY|O_NONBLOCK);
 
     if(eventDevice == -1) {
         perror("open");
         exit(EXIT_FAILURE);
     }
 
-    for(int i=0; i<2;i++) {
-        gettimeofday(&inputEvent[i].time, NULL);
-        inputEvent[i].type = EV_KEY;
-        inputEvent[i].code = code;
-        inputEvent[i].value = i ? EV_RELEASED : EV_PRESSED;
+    inputEvent[0].time.tv_usec = 0;
+    inputEvent[0].time.tv_sec = 0;
+    inputEvent[0].type = 4;
+    inputEvent[0].code = 4;
+    inputEvent[0].value = code;
+
+    inputEvent[1].time.tv_usec = 0;
+    inputEvent[1].time.tv_sec = 0;
+    inputEvent[1].type = EV_KEY;
+    inputEvent[1].code = code;
+    inputEvent[1].value = EV_PRESSED;
+
+    inputEvent[2].time.tv_usec = 0;
+    inputEvent[2].time.tv_sec = 0;
+    inputEvent[2].type = EV_KEY;
+    inputEvent[2].code = code;
+    inputEvent[2].value = EV_RELEASED;
+
+
+    int res;
+
+    res = write(eventDevice, &inputEvent, sizeof(inputEvent));
+    if(res == -1) {
+        perror("Write");
     }
 
-    write(eventDevice, &inputEvent, sizeof(inputEvent));
-
-
-    close(eventDevice);
-
-    sync();
-
-    fflush(NULL);
-
+   close(eventDevice);
 }
 
 inline static void reverseString(char * str)
@@ -59,24 +78,12 @@ inline static void reverseString(char * str)
     {
         char * end = str + strlen(str) - 1;
 
-        // swap the values in the two given variables
-        // XXX: fails when a and b refer to same memory location
-#   define XOR_SWAP(a,b) do\
-    {\
-      (a) ^= (b);\
-      (b) ^= (a);\
-      (a) ^= (b);\
-    } while (0)
-
-        // walk inwards from both ends of the string,
-        // swapping until we get to the middle
         while (str < end)
         {
             XOR_SWAP(*str, *end);
             str++;
             end--;
         }
-#   undef XOR_SWAP
     }
 }
 
@@ -94,12 +101,12 @@ inline static void writeStringToStdin(char * string)
 }
 
 static char *asciiCodes[3] = {
-        "\x1bOPP",
+        "\x1bOP",
         "\x1b[H",
-        "\x1bOJ"
+        "\x1bOQ"
 };
 
-static int scanCodes[3] = { KEY_F1, KEY_HOME, KEY_F5 };
+static int scanCodes[3] = { KEY_F1, KEY_HOME, KEY_F2 };
 
 CTEST(getchTests, simpleGetchSetReturn_q)
 {
@@ -113,9 +120,8 @@ CTEST(getchTests, simpleGetchSetReturn_q)
 
 CTEST(getchTests, SpecialKey)
 {
-
-    writeStringToStdin(asciiCodes[0]);
     writeToEventDevice(scanCodes[0]);
+    writeStringToStdin(asciiCodes[0]);
 
     int key = _getch();
     int code = _getch();
@@ -126,10 +132,8 @@ CTEST(getchTests, SpecialKey)
 
 CTEST(specialKeyTests, Home)
 {
-
+    writeToEventDevice(scanCodes[1]);
     writeStringToStdin(asciiCodes[1]);
-    writeToEventDevice(KEY_HOME);
-
     int key = _getch();
     int code = _getch();
 
@@ -139,8 +143,10 @@ CTEST(specialKeyTests, Home)
 
 CTEST(escapeReturnsTest, Esc)
 {
-    ungetc(27, stdin);
     writeToEventDevice(KEY_ESC);
+    ungetc(27, stdin);
+
+
     int key = _getch();
 
     ASSERT_EQUAL(27, key);

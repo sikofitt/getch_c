@@ -8,6 +8,9 @@
 #define GETCH_H
 
 int _getch(void);
+int getch(void);
 int _ungetch(int ch);
+int ungetch(int ch);
+int cinPeek();
 
-#endif //GETCH_H
+#endif
