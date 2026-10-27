@@ -4,7 +4,10 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/.            *
  ***********************************************************************/
 
+#define _GNU_SOURCE
+
 #include <stdio.h>
+#include <errno.h>
 #include <termios.h>
 #include <unistd.h>
 #include <stdlib.h>
@@ -18,49 +21,68 @@
 
 #define FKEY(k) ((k) >= KEY_F1 && (k) <= KEY_F10) || (k) == KEY_F12 || (k) == KEY_F11
 #define NOTNUMPAD(k) ((k) >= KEY_HOME && (k) <= KEY_DELETE)
-#define XOR_SWAP(a,b) do\
-    {\
-      (a) ^= (b);\
-      (b) ^= (a);\
-      (a) ^= (b);\
-    } while (0)
 
 static struct termios oldTermAttributes;
+static int rawModeActive = 0;
 
-inline static void reverseString(char * str)
+inline static int pushStdin(int c) {
+    return ungetc(c, stdin);
+}
+
+/* Reads up to length bytes from stdin without blocking; returns the count read. */
+static size_t readNonBlocking(void * buffer, size_t length)
 {
-    if (str)
-    {
-        char * end = str + strlen(str) - 1;
+    int flags = fcntl(STDIN_FILENO, F_GETFL);
 
-        while (str < end)
-        {
-            XOR_SWAP(*str, *end);
-            str++;
-            end--;
+    if(flags == -1) {
+        return 0;
+    }
+
+    fcntl(STDIN_FILENO, F_SETFL, flags|O_NONBLOCK);
+
+    errno = 0;
+    size_t bytesRead = fread(buffer, sizeof(char), length, stdin);
+
+    // Only forget the EAGAIN caused by O_NONBLOCK; keep real EOF and I/O errors.
+    if(ferror(stdin) && errno == EAGAIN) {
+        clearerr(stdin);
+    }
+
+    fcntl(STDIN_FILENO, F_SETFL, flags);
+
+    return bytesRead;
+}
+
+/* Pushes buffer back onto stdin so it is read again in its original order. */
+static int pushBackBytes(const unsigned char * buffer, size_t length)
+{
+    for(size_t i = length; i > 0; i--) {
+        if(pushStdin(buffer[i - 1]) == EOF) {
+            return -1;
         }
     }
+
+    return 0;
 }
 
 static int discardRead(unsigned int length)
 {
     char buffer[length];
-    ssize_t bytesRead;
 
-    int flags = fcntl(STDIN_FILENO, F_GETFL);
-    fcntl(STDIN_FILENO, F_SETFL, flags|O_NONBLOCK);
-
-    if( (bytesRead = fread(buffer, sizeof(char), length, stdin)) == -1) {
-        perror("discardRead");
-    }
-
-    fcntl(STDIN_FILENO, F_SETFL, flags);
-
-    return (int)bytesRead;
+    return (int)readNonBlocking(buffer, length);
 }
 
 static int getEventDevice(char ** device)
 {
+    // Lets tests (or users) point at a different input event device or recorded file.
+    // secure_getenv ignores it in setuid/setgid processes.
+    const char *override = secure_getenv("GETCH_EVENT_DEVICE");
+
+    if(override != NULL && *override != '\0') {
+        *device = strdup(override);
+        return *device != NULL ? 1 : -1;
+    }
+
     glob_t search;
 
     int globResult = glob(
@@ -80,15 +102,11 @@ static int getEventDevice(char ** device)
         return -1;
     }
 
-    size_t pathLength;
-
-    for(int i = 0; i<search.gl_pathc;i++) {
+    for(size_t i = 0; i<search.gl_pathc;i++) {
         if(access(search.gl_pathv[i], F_OK) == 0) {
-            pathLength = strlen(search.gl_pathv[i]) + 1;
-            *device = (char *)malloc(pathLength);
-            strcpy(*device, search.gl_pathv[i]);
+            *device = strdup(search.gl_pathv[i]);
             globfree(&search);
-            return 1;
+            return *device != NULL ? 1 : -1;
         }
     }
 
@@ -101,10 +119,9 @@ static unsigned short getScanCode()
     struct input_event inputEvent[5];
     int eventDevice;
 
-    char *device;
+    char *device = NULL;
     if(getEventDevice(&device) == -1) {
-         perror("getEventDevice");
-         free(device);
+        fputs("getch: no keyboard event device found\n", stderr);
         return KEY_RESERVED;
     }
 
@@ -116,15 +133,18 @@ static unsigned short getScanCode()
 
     free(device);
 
-    if( read(eventDevice, &inputEvent, sizeof(inputEvent)) == -1) {
-        close(eventDevice);
+    ssize_t bytesRead = read(eventDevice, &inputEvent, sizeof(inputEvent));
+
+    close(eventDevice);
+
+    if(bytesRead == -1) {
         perror("read");
         return KEY_RESERVED;
     }
 
-    close(eventDevice);
+    size_t eventCount = (size_t)bytesRead / sizeof(struct input_event);
 
-    for(int i = 0;i<5;i++) {
+    for(size_t i = 0; i < eventCount; i++) {
         if(inputEvent[i].type == EV_KEY && inputEvent[i].code != KEY_ENTER) {
             return inputEvent[i].code;
         }
@@ -133,24 +153,25 @@ static unsigned short getScanCode()
     return KEY_RESERVED;
 }
 
-inline static void pushStdin(int c) {
-    ungetc(c, stdin);
-}
-
 static void setNormalMode(void)
 {
-    tcsetattr(STDIN_FILENO, TCSANOW, &oldTermAttributes);
+    if(rawModeActive) {
+        tcsetattr(STDIN_FILENO, TCSANOW, &oldTermAttributes);
+        rawModeActive = 0;
+    }
 }
 
 static void setRawMode(void)
 {
-    tcgetattr(STDIN_FILENO, &oldTermAttributes);
+    if(rawModeActive || tcgetattr(STDIN_FILENO, &oldTermAttributes) == -1) {
+        return;
+    }
 
     struct termios raw = oldTermAttributes;
 
     cfmakeraw(&raw);
     tcsetattr(STDIN_FILENO, TCSANOW, &raw);
-
+    rawModeActive = 1;
 }
 
 static unsigned short resolveScanCode(unsigned short key)
@@ -240,7 +261,13 @@ static int readKey(void) {
 
 int _getch(void) {
 
-    atexit(setNormalMode);
+    static int exitHandlerRegistered = 0;
+
+    if(!exitHandlerRegistered) {
+        atexit(setNormalMode);
+        exitHandlerRegistered = 1;
+    }
+
     setRawMode();
 
     int key = readKey();
@@ -250,55 +277,92 @@ int _getch(void) {
     return key;
 }
 
+#ifdef GETCH_ENABLE_ALIASES
 int getch(void)
 {
     return _getch();
 }
+#endif
 
 int _ungetch(int ch)
 {
     return ungetc(ch, stdin);
 }
 
+#ifdef GETCH_ENABLE_ALIASES
 int ungetch(int ch)
 {
     return _ungetch(ch);
 }
+#endif
 
-int *cinPeekCount(ushort count)
+/* Like std::cin.peek(): blocks until a byte is available, returns it without
+ * consuming it, and returns EOF only at end of input. No Enter is required. */
+int cinPeek(void)
 {
-    char buffer[count];
+    setRawMode();
+    int result = getchar();
+    setNormalMode();
 
-    int flags = fcntl(STDIN_FILENO, F_GETFL);
-
-    fcntl(STDIN_FILENO, F_SETFL, flags|O_NONBLOCK);
-
-    size_t byteCount = fread(&buffer, sizeof(char), count, stdin);
-
-    fcntl(STDIN_FILENO, F_SETFL, flags);
-
-    int *res = (int*)malloc(byteCount);
-
-    for(int i=0;i<byteCount;i++)
-    {
-            res[i] = (int)buffer[i];
+    if(result != EOF) {
+        pushStdin(result);
     }
 
-    reverseString(buffer);
+    return result;
+}
 
-    for(int i=0;i<byteCount;i++) {
-        pushStdin(buffer[i]);
+/* Blocks for the first byte like cinPeek(), then also takes whatever else is
+ * already available, up to count bytes. */
+int *cinPeekCount(unsigned short count, size_t *length)
+{
+    if(length) {
+        *length = 0;
+    }
+
+    if(count == 0) {
+        return NULL;
+    }
+
+    unsigned char buffer[count];
+
+    setRawMode();
+
+    int first = getchar();
+    size_t byteCount = 0;
+
+    if(first != EOF) {
+        buffer[byteCount++] = (unsigned char)first;
+
+        if(count > 1) {
+            byteCount += readNonBlocking(buffer + 1, count - 1);
+        }
+    }
+
+    setNormalMode();
+
+    if(byteCount == 0) {
+        return NULL;
+    }
+
+    // ISO C guarantees one byte of pushback; glibc allows more.
+    if(pushBackBytes(buffer, byteCount) == -1) {
+        errno = ENOBUFS;
+        return NULL;
+    }
+
+    int *res = (int *)malloc(byteCount * sizeof *res);
+
+    if(res == NULL) {
+        return NULL;
+    }
+
+    for(size_t i = 0; i < byteCount; i++) {
+        res[i] = buffer[i];
+    }
+
+    if(length) {
+        *length = byteCount;
     }
 
     return res;
-}
-
-int cinPeek()
-{
-    int flags = fcntl(STDIN_FILENO, F_GETFL);
-    fcntl(STDIN_FILENO, F_SETFL, flags|O_NONBLOCK);
-    int result = fgetc(stdin);
-    fcntl(STDIN_FILENO, F_SETFL, flags);
-    ungetc(result, stdin);
-    return result;
 }

@@ -10,7 +10,11 @@ See https://docs.microsoft.com/en-us/cpp/c-runtime-library/reference/getch-getwc
 
 Difference is that _getch will read CTRL+C, or any control characters.
 
-There is also an extra function `int cinPeek()` that returns the next character in stdin without removing it.
+There is also an extra function `int cinPeek(void)` that behaves like C++ `cin.peek()`: it waits for a key (no Enter needed) and returns it without removing it from stdin, or `EOF` at end of input.
+
+`int *cinPeekCount(unsigned short count, size_t *length)` waits for the first key, then peeks up to `count` bytes that are already available; the returned array must be freed by the caller.
+
+The aliases `getch()` and `ungetch()` are only built when `GETCH_ENABLE_ALIASES` is defined (`cmake -DGETCH_ENABLE_ALIASES=ON`).
 
 ### Note
 Make sure that the user calling the function is in the group "input"

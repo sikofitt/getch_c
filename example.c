@@ -20,8 +20,8 @@ int main() {
     _ungetch('A');
 
     int res  = cinPeek();
-    int getch = _getch();
+    int ch = _getch();
 
-    printf("%c : %c\n\r", res, getch);
+    printf("%c : %c\n\r", res, ch);
 
 }
